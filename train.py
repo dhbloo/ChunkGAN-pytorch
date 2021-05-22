@@ -86,7 +86,7 @@ def setup_training_args(
                                    args.num_gpus)  # keep gpu memory consumption at bay
     args.batch_gpu = batch_gpu or args.batch_size // args.num_gpus
     args.total_kimg = kimgs or 25000
-    args.loss_args = AttributeDict(r1_gamma=0.001 * (res**2) / args.batch_size)
+    args.loss_args = AttributeDict(gp_lambda=0.001 * (res**2) / args.batch_size)
     if loss_args:
         args.loss_args.update(loss_args)
     learning_rate = lrate or 0.001

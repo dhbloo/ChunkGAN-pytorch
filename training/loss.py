@@ -5,6 +5,74 @@ from utils import training_stats
 from utils import conv2d_gradfix
 
 
+class GANLoss(nn.Module):
+    """Define different GAN objectives.
+
+    The GANLoss class abstracts away the need to create the target label tensor
+    that has the same size as the input.
+    """
+    def __init__(self, gan_mode, device, target_real_label=1.0, target_fake_label=0.0):
+        """ Initialize the GANLoss class.
+
+        Parameters:
+            gan_mode (str) - - the type of GAN objective. It currently supports vanilla, lsgan, and wgangp.
+            target_real_label (bool) - - label for a real image
+            target_fake_label (bool) - - label of a fake image
+
+        Note: Do not use sigmoid as the last layer of Discriminator.
+        LSGAN needs no sigmoid. vanilla GANs will handle it with BCEWithLogitsLoss.
+        """
+        super(GANLoss, self).__init__()
+        self.register_buffer('real_label', torch.tensor(target_real_label, device=device))
+        self.register_buffer('fake_label', torch.tensor(target_fake_label, device=device))
+        self.gan_mode = gan_mode
+        if gan_mode == 'lsgan':
+            self.loss = nn.MSELoss()
+        elif gan_mode == 'vanilla':
+            self.loss = nn.BCEWithLogitsLoss()
+        elif gan_mode in ['wgangp']:
+            self.loss = None
+        else:
+            raise NotImplementedError('gan mode %s not implemented' % gan_mode)
+
+    def get_target_tensor(self, prediction, target_is_real):
+        """Create label tensors with the same size as the input.
+
+        Parameters:
+            prediction (tensor) - - tpyically the prediction from a discriminator
+            target_is_real (bool) - - if the ground truth label is for real images or fake images
+
+        Returns:
+            A label tensor filled with ground truth label, and with the size of the input
+        """
+
+        if target_is_real:
+            target_tensor = self.real_label
+        else:
+            target_tensor = self.fake_label
+        return target_tensor.expand_as(prediction)
+
+    def __call__(self, prediction, target_is_real):
+        """Calculate loss given Discriminator's output and grount truth labels.
+
+        Parameters:
+            prediction (tensor) - - tpyically the prediction output from a discriminator
+            target_is_real (bool) - - if the ground truth label is for real images or fake images
+
+        Returns:
+            the calculated loss.
+        """
+        if self.gan_mode in ['lsgan', 'vanilla']:
+            target_tensor = self.get_target_tensor(prediction, target_is_real)
+            loss = self.loss(prediction, target_tensor)
+        elif self.gan_mode == 'wgangp':
+            if target_is_real:
+                loss = -prediction.mean()
+            else:
+                loss = prediction.mean()
+        return loss
+
+
 class ChunkGANLoss():
     def __init__(self,
                  device,
@@ -15,7 +83,7 @@ class ChunkGANLoss():
                  Enc_bg,
                  Dec_c,
                  Dec_bg,
-                 r1_gamma,
+                 gp_lambda,
                  EncDec_c_lambda=1,
                  EncDec_bg_lambda=1,
                  G_cycle_lambda=1,
@@ -30,13 +98,14 @@ class ChunkGANLoss():
         self.Enc_bg = Enc_bg
         self.Dec_c = Dec_c
         self.Dec_bg = Dec_bg
-        self.r1_gamma = r1_gamma
+        self.gp_lambda = gp_lambda
         self.EncDec_c_lambda = EncDec_c_lambda
         self.EncDec_bg_lambda = EncDec_bg_lambda
         self.G_cycle_lambda = G_cycle_lambda
         self.G_disc_lambda = G_disc_lambda
         self.D_lambda = D_lambda
-        self.cycle_loss = nn.SmoothL1Loss()
+        self.cycle_loss = nn.L1Loss()
+        self.gan_loss = GANLoss('lsgan', device)
 
     def _chunk_shape(self):
         return (self.chunk_size, self.chunk_size)
@@ -58,7 +127,7 @@ class ChunkGANLoss():
         do_EncDec_bg_main = phase in ['EncDec_bg_main', 'EncDec_bg_both']
         do_G_main = phase in ['G_main', 'G_both']
         do_D_main = phase in ['D_main', 'D_both'] and self.D_lambda != 0
-        do_D_r1 = phase in ['D_reg', 'D_both'] and self.r1_gamma != 0
+        do_D_reg = phase in ['D_reg', 'D_both'] and self.gp_lambda != 0
 
         # EncDec_c_main: Cycle consistency loss for chunk encoder/generator
         if do_EncDec_c_main:
@@ -167,13 +236,13 @@ class ChunkGANLoss():
                     with ddp_sync(self.D, sync=False):
                         gen_logits = self.D(gen_image)
                     training_stats.report('Loss/scores/fake', gen_logits)
-                    loss_Gdisc = nn.functional.softplus(-gen_logits)  # -log(sigmoid(gen_logits))
+                    loss_Gdisc = self.gan_loss(gen_logits, True)
                     training_stats.report('Loss/Gdisc/loss', loss_Gdisc)
                 with torch.autograd.profiler.record_function('Gdisc_backward'):
-                    loss_Gdisc.mean().mul(self.G_disc_lambda).mul(gain).backward()
+                    loss_Gdisc.mul(self.G_disc_lambda).mul(gain).backward()
 
         # D_main: Discriminator loss.
-        if do_D_main or do_D_r1:
+        if do_D_main or do_D_reg:
             # Minimize logits for generated images.
             if do_D_main:
                 with torch.autograd.profiler.record_function('Dgen_forward'):
@@ -182,12 +251,10 @@ class ChunkGANLoss():
                     with ddp_sync(self.D, sync=False):  # Gets synced by loss_Dreal.
                         gen_logits = self.D(gen_image)
                     training_stats.report('Loss/scores/fake', gen_logits)
-                    loss_Dgen = nn.functional.softplus(gen_logits)  # -log(1 - sigmoid(gen_logits))
-                with torch.autograd.profiler.record_function('Dgen_backward'):
-                    loss_Dgen.mean().mul(self.D_lambda).mul(gain).backward()
+                    loss_Dgen = self.gan_loss(gen_logits, False)
 
-            with torch.autograd.profiler.record_function('Dreal_Dr1_forward'):
-                real_image_tmp = real_image.detach().requires_grad_(do_D_r1)
+            with torch.autograd.profiler.record_function('Dreal_Dreg_forward'):
+                real_image_tmp = real_image.detach().requires_grad_(do_D_reg)
                 with ddp_sync(self.D, sync):
                     real_logits = self.D(real_image_tmp)
                 training_stats.report('Loss/scores/real', real_logits)
@@ -195,26 +262,27 @@ class ChunkGANLoss():
                 # Maximize logits for real images.
                 if do_D_main:
                     loss_Dreal = nn.functional.softplus(-real_logits)  # -log(sigmoid(real_logits))
+                    loss_Dreal = self.gan_loss(real_logits, True)
                     training_stats.report('Loss/D/loss', loss_Dgen + loss_Dreal)
 
                 # Discriminator regularization.
-                if do_D_r1:
+                if do_D_reg:
                     with torch.autograd.profiler.record_function(
-                            'r1_grads'), conv2d_gradfix.no_weight_gradients():
-                        r1_grads = torch.autograd.grad(outputs=[real_logits.sum()],
-                                                       inputs=[real_image_tmp],
-                                                       create_graph=True,
-                                                       only_inputs=True)[0]
-                    r1_penalty = r1_grads.square().sum([1, 2, 3])
-                    loss_Dr1 = r1_penalty * (self.r1_gamma / 2)
-                    training_stats.report('Loss/r1_penalty', r1_penalty)
-                    training_stats.report('Loss/D/reg', loss_Dr1)
+                            'D_grads'), conv2d_gradfix.no_weight_gradients():
+                        grads = torch.autograd.grad(outputs=[real_logits.sum()],
+                                                    inputs=[real_image_tmp],
+                                                    create_graph=True,
+                                                    only_inputs=True)[0]
+                    grads = grads.view(real_image_tmp.size(0), -1)
+                    loss_Dreg = ((grads + 1e-16).norm(2, dim=1) - 1.0).square().mean()
+                    training_stats.report('Loss/D/grads', grads)
+                    training_stats.report('Loss/D/reg', loss_Dreg)
 
             if do_D_main:
-                with torch.autograd.profiler.record_function('Dreal_backward'):
-                    loss_Dreal.mean().mul(self.D_lambda).mul(gain).backward()
+                with torch.autograd.profiler.record_function('Dmain_backward'):
+                    (loss_Dgen + loss_Dreal).mul(self.D_lambda).mul(gain).backward()
 
-            if do_D_r1:
+            if do_D_reg:
                 with torch.autograd.profiler.record_function('Dr1_backward'):
                     # (real_logits * 0) added to solve DDP 'use all forward outputs in backward'
-                    (real_logits.mean() * 0 + loss_Dr1).mean().mul(gain).backward()
+                    (real_logits.mean() * 0 + loss_Dreg).mul(self.gp_lambda).mul(gain).backward()
