@@ -1,0 +1,77 @@
+{
+    "seed": 0,
+    "snap": 5,
+    "dataset": "ship",
+    "dataset_args": {
+        "data_root": "../_datasets/ships128",
+        "resolution": 64,
+        "min_object_area": 0.04,
+        "max_object_area": 0.16,
+        "blur_radius": 0.12,
+        "thresh_type": "global",
+        "thresh_min": 40,
+        "morph_iteration": 3,
+        "morph_kernel_size": 0.001
+    },
+    "chunk_size": 16,
+    "sample_input_args": {
+        "min_object_num": 0,
+        "max_object_num": 5,
+        "min_object_w": 4,
+        "max_object_w": 12,
+        "min_object_h": 4,
+        "max_object_h": 12
+    },
+    "network_args": {
+        "G": {
+            "feature_channels": 8,
+            "G_bg_args": {
+                "base_channels": 4,
+                "num_layers": 3,
+                "duplicate_layer_set": [
+                    2
+                ]
+            },
+            "G_chunk_args": {
+                "base_channels": 4,
+                "num_layers": 2,
+                "duplicate_layer_set": [
+                    1
+                ]
+            },
+            "synthesis_args": {
+                "base_channels": 4,
+                "num_downsample_layers": 3,
+                "num_intermediate_layers": 8
+            }
+        },
+        "D": {
+            "base_channels": 32,
+            "num_layers": 2,
+            "duplicate_layer_set": [
+                1
+            ]
+        },
+        "Enc_c": {
+            "base_channels": 4,
+            "num_layers": 2
+        },
+        "Enc_bg": {
+            "base_channels": 4,
+            "num_layers": 3
+        },
+        "Dec_c": {
+            "base_channels": 4,
+            "num_layers": 2,
+            "duplicate_layer_set": [
+                1
+            ]
+        },
+        "Dec_bg": {
+            "base_channels": 4,
+            "num_layers": 3
+        }
+    },
+    "sample_interval": 32,
+    "G_D_train_start_tick": 0
+}

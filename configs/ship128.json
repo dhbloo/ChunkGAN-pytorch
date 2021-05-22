@@ -1,0 +1,28 @@
+{
+    "seed": 0,
+    "snap": 25,
+    "batch": 256,
+    "dataset": "ship",
+    "dataset_args": {
+        "data_root": "data/ships128",
+        "min_object_area": 0.04,
+        "max_object_area": 0.16,
+        "blur_radius": 0.12,
+        "thresh_type": "global",
+        "thresh_min": 40,
+        "morph_iteration": 3,
+        "morph_kernel_size": 0.001
+    },
+    "chunk_size": 32,
+    "sample_input_args": {
+        "min_object_num": 0,
+        "max_object_num": 5,
+        "min_object_w": 8,
+        "max_object_w": 24,
+        "min_object_h": 8,
+        "max_object_h": 24
+    },
+    "loss_args": {},
+    "sample_interval": 32,
+    "G_D_train_start_tick": 30
+}
