@@ -78,6 +78,38 @@ def init_optimizer(opt_type, params, opt_args={}):
     return optimizer(params, **opt_args)
 
 
+def generate_sample_G_inputs(num_samples, Enc_bg, Enc_c, device, dataset, batch_size, seed=0):
+    data_loader = DataLoader(dataset,
+                             batch_size=num_samples,
+                             sampler=InfiniteSampler(dataset, seed=seed),
+                             collate_fn=dataset.collect_fn)
+    images, all_chunks = next(iter(data_loader))
+    images = images.to(device)
+
+    c_latents = []
+    mask_images = torch.ones((images.shape[0], 1, *images.shape[2:]), device=device)
+    for i, chunks in enumerate(all_chunks):
+        batch_chunk_latents = []
+        for x, y, w, h in chunks:
+            chunk = images[i:i + 1, :, y:y + h, x:x + w]
+            chunk = torch.nn.functional.interpolate(chunk,
+                                                    Enc_c.image_size,
+                                                    mode='bilinear',
+                                                    align_corners=False)
+            batch_chunk_latents += [Enc_c(chunk)]
+            mask_images[i:i + 1, :, y:y + h, x:x + w] = 0
+        c_latents += [torch.cat(batch_chunk_latents) if len(batch_chunk_latents) > 0 else None]
+
+    bg_images = torch.mul(images, mask_images)
+    bg_latents = Enc_bg(bg_images, mask_images)
+
+    bg_latents = bg_latents.split(batch_size)
+    c_latents = split_list_to_batches(c_latents, batch_size)
+    all_chunks = split_list_to_batches(all_chunks, batch_size)
+
+    return list(zip(bg_latents, c_latents, all_chunks))
+
+
 def generate_sample_latents(num_samples, Enc_bg, Enc_c, device, dataset=None, seed=0):
     if dataset is not None:
         data_loader = DataLoader(dataset,
@@ -103,7 +135,8 @@ def generate_sample_latents(num_samples, Enc_bg, Enc_c, device, dataset=None, se
             c_latents = c_latents * (num_samples // len(c_latents) + 1)
 
         c_latents = torch.cat(c_latents[:num_samples])
-        bg_latents = Enc_bg(images, mask_images)
+        bg_images = torch.mul(images, mask_images)
+        bg_latents = Enc_bg(bg_images, mask_images)
     else:
         c_latents = torch.randn((num_samples, Enc_c.latent_dim), device=device)
         bg_latents = torch.randn((num_samples, Enc_bg.latent_dim), device=device)
@@ -150,7 +183,7 @@ def generate_random_G_input(num_samples,
     return list(zip(sample_bg_z, sample_c_zs, sample_chunks))
 
 
-def generate_sample_all_inputs(num_sample,
+def generate_sample_all_inputs(num_samples,
                                G,
                                Enc_bg,
                                Enc_c,
@@ -158,12 +191,14 @@ def generate_sample_all_inputs(num_sample,
                                device,
                                batch_size,
                                sample_input_args={}):
-    G_inputs = generate_random_G_input(num_sample, G, Enc_bg, Enc_c, device, dataset, batch_size,
+    G_inputs = generate_random_G_input(num_samples, G, Enc_bg, Enc_c, device, dataset, batch_size,
                                        **sample_input_args)
-    bg_latents, c_latents = generate_sample_latents(num_sample, Enc_bg, Enc_c, device, dataset)
+    real_G_inputs = generate_sample_G_inputs(num_samples, Enc_bg, Enc_c, device, dataset,
+                                             batch_size)
+    bg_latents, c_latents = generate_sample_latents(num_samples, Enc_bg, Enc_c, device, dataset)
     bg_latents = bg_latents.split(batch_size)
     c_latents = c_latents.split(batch_size)
-    return G_inputs, bg_latents, c_latents
+    return G_inputs, real_G_inputs, bg_latents, c_latents
 
 
 def training_loop(
@@ -355,10 +390,13 @@ def training_loop(
         save_image_grid(images, os.path.join(run_dir, 'reals.png'), [0, 1], grid_size)
         save_image_grid(draw_bounding_boxes(images, chunks_list),
                         os.path.join(run_dir, 'reals_bbox.png'), [0, 1], grid_size)
-        grid_G_inputs, grid_bg_latents, grid_c_latents = generate_sample_all_inputs(
+        grid_G_inputs, grid_real_G_inputs, grid_bg_latents, grid_c_latents = generate_sample_all_inputs(
             len(datas), G, Enc_bg, Enc_c, dataset, device, batch_gpu, sample_input_args)
         images = torch.cat(
             [G(bg_z, chunk_zs, chunks).cpu() for bg_z, chunk_zs, chunks in grid_G_inputs]).numpy()
+        real_images = torch.cat([
+            G(bg_z, chunk_zs, chunks).cpu() for bg_z, chunk_zs, chunks in grid_real_G_inputs
+        ]).numpy()
         bg_images = torch.cat([Dec_bg(bg_latent).cpu() for bg_latent in grid_bg_latents]).numpy()
         c_images = torch.cat([
             torch.nn.functional.interpolate(Dec_c(c_latent).cpu(),
@@ -367,6 +405,8 @@ def training_loop(
                                             align_corners=False) for c_latent in grid_c_latents
         ]).numpy()
         save_image_grid(images, os.path.join(run_dir, 'fakes_init.png'), [-1, 1], grid_size)
+        save_image_grid(real_images, os.path.join(run_dir, 'fakes_real_init.png'), [-1, 1],
+                        grid_size)
         save_image_grid(bg_images, os.path.join(run_dir, 'background_init.png'), [-1, 1],
                         grid_size)
         save_image_grid(c_images, os.path.join(run_dir, 'chunk_init.png'), [-1, 1], grid_size)
@@ -503,12 +543,18 @@ def training_loop(
         # 12. Save image snapshot.
         if (gid == 0) and (image_snapshot_ticks
                            is not None) and (done or cur_tick % image_snapshot_ticks == 0):
-            grid_G_inputs, grid_bg_latents, grid_c_latents = generate_sample_all_inputs(
+            grid_G_inputs, grid_real_G_inputs, grid_bg_latents, grid_c_latents = generate_sample_all_inputs(
                 len(images), G, Enc_bg, Enc_c, dataset, device, batch_gpu, sample_input_args)
             images = torch.cat([
                 G(bg_z, chunk_zs, chunks).cpu() for bg_z, chunk_zs, chunks in grid_G_inputs
             ]).numpy()
+            real_images = torch.cat([
+                G(bg_z, chunk_zs, chunks).cpu() for bg_z, chunk_zs, chunks in grid_real_G_inputs
+            ]).numpy()
             chunks_list = [j for sub in [chunks for _, _, chunks in grid_G_inputs] for j in sub]
+            real_chunks_list = [
+                j for sub in [chunks for _, _, chunks in grid_real_G_inputs] for j in sub
+            ]
             bg_images = torch.cat([Dec_bg(bg_latent).cpu()
                                    for bg_latent in grid_bg_latents]).numpy()
             c_images = torch.cat([
@@ -519,9 +565,15 @@ def training_loop(
             ]).numpy()
             save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.png'),
                             [-1, 1], grid_size)
+            save_image_grid(real_images,
+                            os.path.join(run_dir, f'fakes_real{cur_nimg//1000:06d}.png'), [-1, 1],
+                            grid_size)
             save_image_grid(draw_bounding_boxes(images, chunks_list),
                             os.path.join(run_dir, f'fakes_bbox{cur_nimg//1000:06d}.png'), [-1, 1],
                             grid_size)
+            save_image_grid(draw_bounding_boxes(real_images, real_chunks_list),
+                            os.path.join(run_dir, f'fakes_real_bbox{cur_nimg//1000:06d}.png'),
+                            [-1, 1], grid_size)
             save_image_grid(bg_images, os.path.join(run_dir,
                                                     f'background{cur_nimg//1000:06d}.png'),
                             [-1, 1], grid_size)

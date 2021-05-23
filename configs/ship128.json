@@ -16,13 +16,17 @@
     "chunk_size": 32,
     "sample_input_args": {
         "min_object_num": 0,
-        "max_object_num": 5,
+        "max_object_num": 4,
         "min_object_w": 8,
-        "max_object_w": 24,
+        "max_object_w": 22,
         "min_object_h": 8,
-        "max_object_h": 24
+        "max_object_h": 22
     },
-    "loss_args": {},
+    "loss_args": {
+        "G_cycle_lambda": 20,
+        "G_cycle_chunk_lambda": 100,
+        "G_chunk_lambda": 100
+    },
     "sample_interval": 32,
     "G_D_train_start_tick": 30
 }

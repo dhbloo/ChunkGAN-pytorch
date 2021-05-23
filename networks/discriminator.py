@@ -35,12 +35,12 @@ class Discriminator(nn.Module):
             self,
             image_size,
             in_channels,
-            base_channels=64,
-            num_layers=3,
-            duplicate_layer_set=[],
+            base_channels=128,
+            num_layers=2,
+            duplicate_layer_set=[1],
             norm_layer=nn.InstanceNorm2d,
             activation=nn.LeakyReLU,
-            mbstd_group_size=4,  # Group size for the minibatch standard deviation layer, None = entire minibatch.
+            mbstd_group_size=32,  # Group size for the minibatch standard deviation layer, None = entire minibatch.
             mbstd_num_channels=1,  # Number of features for the minibatch standard deviation layer, 0 = disable.
     ):
         super(Discriminator, self).__init__()

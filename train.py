@@ -48,7 +48,7 @@ def setup_training_args(
         raise UserError('--gpus must be a power of two')
 
     args.image_snapshot_ticks = snap or 50
-    args.network_snapshot_ticks = snap or 50
+    args.network_snapshot_ticks = max(snap, 50) or 50
     if snap is not None and snap < 1:
         raise UserError('--snap must be at least 1')
 
@@ -89,7 +89,7 @@ def setup_training_args(
     args.loss_args = AttributeDict(gp_lambda=0.001 * (res**2) / args.batch_size)
     if loss_args:
         args.loss_args.update(loss_args)
-    learning_rate = lrate or 0.001
+    learning_rate = lrate or 0.0005
     args.G_opt_args = AttributeDict(type='adam', lr=learning_rate, betas=[0, 0.99])
     if G_opt_args:
         args.G_opt_args.update(G_opt_args)
