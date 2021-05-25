@@ -111,7 +111,7 @@ class ChunkGANLoss():
         self.cycle_loss = nn.L1Loss()
         self.cycle_loss_sum = nn.L1Loss(reduction='sum')
         self.gan_loss = GANLoss('lsgan', device)
-        self.latent_cycle_loss = nn.L1Loss()
+        self.latent_cycle_loss = nn.MSELoss()
 
     def _chunk_shape(self):
         return (self.chunk_size, self.chunk_size)
@@ -228,7 +228,7 @@ class ChunkGANLoss():
                 with ddp_sync(self.Enc_bg, sync=False):
                     bg_latent = self.Enc_bg(masked_real_bg, mask_image)
                 # Synthesis final image using generator
-                with ddp_sync(self.G, sync=False):  # Gets synced by loss_Gdisc.
+                with ddp_sync(self.G, sync=not (do_G_disc or do_G_chunk)):
                     fake_image = self.G(bg_latent, chunk_latents, chunks)
                 # Calc image l2 loss
                 loss_Gcycle = self.cycle_loss(fake_image, real_image)
@@ -243,28 +243,35 @@ class ChunkGANLoss():
                     loss_Gcycle_chunk = self.cycle_loss_sum(
                         masked_fake_chunk, masked_real_chunk).div(chunk_mask_image_sum)
                     training_stats.report('Loss/Gcycle_chunk/loss', loss_Gcycle_chunk)
-
             with torch.autograd.profiler.record_function('Gcycle_backward'):
                 (loss_Gcycle * self.G_cycle_lambda +
                  loss_Gcycle_chunk * self.G_cycle_chunk_lambda).mul(gain).backward()
 
             # Maximize logits for generated images.
-            loss_Gdisc = 0
             if do_G_disc:
                 with torch.autograd.profiler.record_function('Gdisc_forward'):
-                    with ddp_sync(self.G, sync):
+                    with ddp_sync(self.G, sync=not do_G_chunk):
                         gen_image = self.G(*G_inputs)
                     with ddp_sync(self.D, sync=False):
                         gen_logits = self.D(gen_image)
                     training_stats.report('Loss/scores/fake', gen_logits)
                     loss_Gdisc = self.gan_loss(gen_logits, True)
                     training_stats.report('Loss/Gdisc/loss', loss_Gdisc)
+                with torch.autograd.profiler.record_function('Gdisc_backward'):
+                    loss_Gdisc.mul(self.G_disc_lambda).mul(gain).backward()
 
             # Cycle consistency loss for chunk latents
-            loss_Gchunk = 0
             if do_G_chunk:
+                loss_Gchunk = None
                 with torch.autograd.profiler.record_function('Gchunk_forward'):
-                    _, chunk_latents, chunk_trans = G_inputs
+                    bg_latent, chunk_latents, chunk_trans = G_inputs
+                    with ddp_sync(self.G, sync):
+                        # Images are generated without background latents
+                        gen_image = self.G(bg_latent,
+                                           chunk_latents,
+                                           chunk_trans,
+                                           no_background=True)
+
                     losses_Gchunk = []
                     for batch_idx in range(len(chunk_trans)):
                         if len(chunk_trans[batch_idx]) > 0:
@@ -286,10 +293,10 @@ class ChunkGANLoss():
                         loss_Gchunk = torch.stack(losses_Gchunk).mean()
                         training_stats.report('Loss/Gchunk/loss', loss_Gchunk)
 
-            if do_G_disc or do_G_chunk:
-                with torch.autograd.profiler.record_function('Gdisc_Gchunk_backward'):
-                    (loss_Gdisc * self.G_disc_lambda +
-                     loss_Gchunk * self.G_chunk_lambda).mul(gain).backward()
+                if loss_Gchunk is not None:
+                    with torch.autograd.profiler.record_function('Gchunk_backward'):
+                        (gen_image.mean() * 0 + loss_Gchunk).mul(
+                            self.G_chunk_lambda).mul(gain).backward()
 
         # D_main: Discriminator loss.
         if do_D_main or do_D_reg:

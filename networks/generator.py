@@ -80,7 +80,7 @@ class Generator(nn.Module):
                  feature_channels=16,
                  bg_latent_dim=512,
                  chunk_latent_dim=512,
-                 compose_func='replace',
+                 compose_func='sum',
                  G_bg_args={},
                  G_chunk_args={},
                  synthesis_args={}):
@@ -90,6 +90,7 @@ class Generator(nn.Module):
         self.chunk_size = chunk_size
         self.bg_latent_dim = bg_latent_dim
         self.chunk_latent_dim = chunk_latent_dim
+        self.feature_channels = feature_channels
         self.G_bg = DecoderNetwork(image_size, feature_channels, bg_latent_dim, **{
             "num_layers": 4,
             "duplicate_layer_set": [3],
@@ -101,15 +102,17 @@ class Generator(nn.Module):
         if compose_func == 'replace':
             self.compose_func = 'replace'
         elif compose_func == 'max':
-            self.compose_func = torch.max
+            self.compose_func = torch.maximum
         elif compose_func == 'sum':
-            self.compose_func = torch.sum
+            self.compose_func = torch.add
         else:
             raise NotImplementedError(f'compose function [{compose_func}] not implemented')
 
-    def forward(self, bg_latent, chunk_latents, chunk_trans):
+    def forward(self, bg_latent, chunk_latents, chunk_trans, no_background=False):
         assert len(chunk_latents) == len(chunk_trans)
         bg_feature = self.G_bg(bg_latent)
+        if no_background:
+            bg_feature = bg_feature.mul(0)
 
         combined_feature = []
         for batch_idx in range(len(chunk_latents)):

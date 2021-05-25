@@ -72,6 +72,11 @@
             "num_layers": 3
         }
     },
+    "loss_args": {
+        "G_cycle_lambda": 10,
+        "G_cycle_chunk_lambda": 50,
+        "G_chunk_lambda": 50
+    },
     "sample_interval": 32,
     "G_D_train_start_tick": 0
 }

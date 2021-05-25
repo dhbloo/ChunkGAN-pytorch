@@ -1,7 +1,7 @@
 {
     "seed": 0,
     "snap": 25,
-    "batch": 256,
+    "batch": 512,
     "dataset": "ship",
     "dataset_args": {
         "data_root": "data/ships128",
@@ -18,14 +18,14 @@
         "min_object_num": 0,
         "max_object_num": 4,
         "min_object_w": 8,
-        "max_object_w": 22,
+        "max_object_w": 24,
         "min_object_h": 8,
-        "max_object_h": 22
+        "max_object_h": 24
     },
     "loss_args": {
-        "G_cycle_lambda": 20,
-        "G_cycle_chunk_lambda": 100,
-        "G_chunk_lambda": 100
+        "G_cycle_lambda": 5,
+        "G_cycle_chunk_lambda": 10,
+        "G_chunk_lambda": 50
     },
     "sample_interval": 32,
     "G_D_train_start_tick": 30
