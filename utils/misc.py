@@ -3,6 +3,8 @@ import numpy as np
 import sys
 import contextlib
 import warnings
+import re
+from PIL import Image
 from torch import nn
 from typing import Any, List, Tuple, Union
 
@@ -196,7 +198,7 @@ def numpy_to_image(arr,
             data32 = data.astype(np.uint32)
             image = Image.frombytes(mode, shape, data32.tostring())
         else:
-            raise ValueError(_errstr)
+            raise ValueError()
         return image
 
     # if here then 3-d array with a 3 or a 4 in the shape length.
@@ -234,7 +236,7 @@ def numpy_to_image(arr,
             mode = 'RGBA'
 
     if mode not in ['RGB', 'RGBA', 'YCbCr', 'CMYK']:
-        raise ValueError(_errstr)
+        raise ValueError(f'unknown mode {mode}')
 
     if mode in ['RGB', 'YCbCr']:
         if numch != 3:
@@ -478,3 +480,43 @@ class suppress_tracer_warnings(warnings.catch_warnings):
         super().__enter__()
         warnings.simplefilter('ignore', category=torch.jit.TracerWarning)
         return self
+
+
+#----------------------------------------------------------------------------
+# Utilities for operating with torch.nn.Module parameters and buffers.
+
+
+def params_and_buffers(module):
+    assert isinstance(module, torch.nn.Module)
+    return list(module.parameters()) + list(module.buffers())
+
+
+def named_params_and_buffers(module):
+    assert isinstance(module, torch.nn.Module)
+    return list(module.named_parameters()) + list(module.named_buffers())
+
+
+def copy_params_and_buffers(src_module, dst_module, require_all=False):
+    assert isinstance(src_module, torch.nn.Module)
+    assert isinstance(dst_module, torch.nn.Module)
+    src_tensors = {name: tensor for name, tensor in named_params_and_buffers(src_module)}
+    for name, tensor in named_params_and_buffers(dst_module):
+        assert (name in src_tensors) or (not require_all)
+        if name in src_tensors:
+            tensor.copy_(src_tensors[name].detach()).requires_grad_(tensor.requires_grad)
+
+
+#----------------------------------------------------------------------------
+# Check DistributedDataParallel consistency across processes.
+
+
+def check_ddp_consistency(module, ignore_regex=None):
+    assert isinstance(module, torch.nn.Module)
+    for name, tensor in named_params_and_buffers(module):
+        fullname = type(module).__name__ + '.' + name
+        if ignore_regex is not None and re.fullmatch(ignore_regex, fullname):
+            continue
+        tensor = tensor.detach()
+        other = tensor.clone()
+        torch.distributed.broadcast(tensor=other, src=0)
+        assert (nan_to_num(tensor) == nan_to_num(other)).all(), fullname

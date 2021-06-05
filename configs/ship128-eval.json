@@ -4,7 +4,7 @@
     "batch": 256,
     "dataset": "ship",
     "dataset_args": {
-        "data_root": "data/ships128",
+        "data_root": "../_datasets/ships128",
         "min_object_area": 0.04,
         "max_object_area": 0.16,
         "blur_radius": 0.12,
